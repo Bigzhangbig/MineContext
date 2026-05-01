@@ -11,6 +11,7 @@ from enum import Enum
 from typing import Any, Dict, List
 
 from openai import APIError, AsyncOpenAI, OpenAI
+from google import genai
 from volcenginesdkarkruntime import Ark
 
 from opencontext.models.context import Vectorize
@@ -23,6 +24,7 @@ logger = get_logger(__name__)
 class LLMProvider(Enum):
     OPENAI = "openai"
     DOUBAO = "doubao"
+    GEMINI = "gemini"
 
 
 class LLMType(Enum):
@@ -47,6 +49,11 @@ class LLMClient:
         )
         if self.provider == LLMProvider.DOUBAO.value and self.llm_type == LLMType.EMBEDDING:
             self.client = Ark(api_key=self.api_key, base_url=self.base_url, timeout=self.timeout)
+            self.async_client = None
+
+        self.gemini_client = None
+        if self.provider == LLMProvider.GEMINI.value and self.llm_type == LLMType.EMBEDDING:
+            self.gemini_client = genai.Client(api_key=self.api_key)
             self.async_client = None
 
     def generate(self, prompt: str, **kwargs) -> str:
@@ -266,7 +273,12 @@ class LLMClient:
 
     def _request_embedding(self, text: str, **kwargs) -> List[float]:
         try:
-            if self.provider != LLMProvider.DOUBAO.value:
+            if self.provider == LLMProvider.GEMINI.value:
+                result = self.gemini_client.models.embed_content(
+                    model=self.model, contents=[text]
+                )
+                embedding = result.embeddings[0].values
+            elif self.provider != LLMProvider.DOUBAO.value:
                 response = self.client.embeddings.create(model=self.model, input=[text])
                 embedding = response.data[0].embedding
             else:
@@ -275,8 +287,12 @@ class LLMClient:
                 )
                 embedding = response.data.embedding
 
-            # Record token usage
-            if hasattr(response, "usage") and response.usage:
+            # Record token usage (skip for Gemini — different response format)
+            if (
+                self.provider != LLMProvider.GEMINI.value
+                and hasattr(response, "usage")
+                and response.usage
+            ):
                 try:
                     from opencontext.monitoring import record_token_usage
 
@@ -310,10 +326,23 @@ class LLMClient:
         except APIError as e:
             logger.error(f"OpenAI API error during embedding: {e}")
             raise
+        except Exception as e:
+            logger.error(f"Embedding API error: {e}")
+            raise
 
     async def _request_embedding_async(self, text: str, **kwargs) -> List[float]:
         try:
-            if self.provider == LLMProvider.DOUBAO.value:
+            if self.provider == LLMProvider.GEMINI.value:
+                import asyncio
+
+                def _do_gemini_embed():
+                    result = self.gemini_client.models.embed_content(
+                        model=self.model, contents=[text]
+                    )
+                    return result.embeddings[0].values
+
+                embedding = await asyncio.to_thread(_do_gemini_embed)
+            elif self.provider == LLMProvider.DOUBAO.value:
                 # Only ark has multimodal_embeddings
                 response = self.client.multimodal_embeddings.create(
                     model=self.model, input=[{"type": "text", "text": text}]
@@ -323,8 +352,12 @@ class LLMClient:
                 response = await self.async_client.embeddings.create(model=self.model, input=[text])
                 embedding = response.data[0].embedding
 
-            # Record token usage
-            if hasattr(response, "usage") and response.usage:
+            # Record token usage (skip for Gemini — different response format)
+            if (
+                self.provider != LLMProvider.GEMINI.value
+                and hasattr(response, "usage")
+                and response.usage
+            ):
                 try:
                     from opencontext.monitoring import record_token_usage
 
@@ -357,6 +390,9 @@ class LLMClient:
             return embedding
         except APIError as e:
             logger.error(f"OpenAI API error during embedding: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Embedding API error: {e}")
             raise
 
     def vectorize(self, vectorize: Vectorize, **kwargs):
@@ -406,7 +442,21 @@ class LLMClient:
                 if code in error_msg:
                     return msg
 
-            # 2. Check for OpenAI specific errors
+            # 2. Check for Gemini/Google AI specific errors
+            gemini_errors = {
+                "API_KEY_INVALID": "Invalid Gemini API key provided.",
+                "API_KEY_NOT_FOUND": "Gemini API key not found. Check your API key in Google AI Studio.",
+                "PERMISSION_DENIED": "Permission denied. Make sure your API key has access to this model.",
+                "MODEL_NOT_FOUND": "The Gemini model does not exist or is not accessible.",
+                "RESOURCE_EXHAUSTED": "Gemini quota or rate limit exceeded. Check your usage limits.",
+                "INVALID_ARGUMENT": "Invalid request to Gemini API. Check your model configuration.",
+            }
+
+            for code, msg in gemini_errors.items():
+                if code in error_msg:
+                    return msg
+
+            # 3. Check for OpenAI specific errors
             openai_errors = {
                 "insufficient_quota": "Insufficient quota. Check your plan and billing details.",
                 "invalid_api_key": "Invalid API key provided.",
@@ -477,7 +527,15 @@ class LLMClient:
 
             elif self.llm_type == LLMType.EMBEDDING:
                 # Test with a simple text
-                if self.provider == LLMProvider.DOUBAO.value:
+                if self.provider == LLMProvider.GEMINI.value:
+                    result = self.gemini_client.models.embed_content(
+                        model=self.model, contents=["test"]
+                    )
+                    if result.embeddings and len(result.embeddings) > 0 and result.embeddings[0].values:
+                        return True, "Embedding model validation successful"
+                    else:
+                        return False, "Embedding model returned empty response"
+                elif self.provider == LLMProvider.DOUBAO.value:
                     response = self.client.multimodal_embeddings.create(
                         model=self.model, input=[{"type": "text", "text": "test"}]
                     )

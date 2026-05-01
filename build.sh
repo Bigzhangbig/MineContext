@@ -14,29 +14,28 @@ if ! command -v python3 &> /dev/null; then
     exit 1
 fi
 
-USE_UV=false
-# 2. Check for uv and install dependencies
-if command -v uv &> /dev/null; then
-    echo "--> Using uv to install dependencies..."
+# 2. Use existing venv if available, otherwise create one
+VENV_PYTHON=""
+if [ -f ".venv/bin/python3" ]; then
+    echo "--> Using existing .venv..."
+    VENV_PYTHON=".venv/bin/python3"
+elif command -v uv &> /dev/null; then
+    echo "--> Creating venv with uv..."
+    uv venv .venv
     uv sync
-    USE_UV=true
+    VENV_PYTHON=".venv/bin/python3"
 else
-    echo "--> uv not found, using pip to install from pyproject.toml..."
+    echo "--> Using pip to install..."
     python3 -m pip install -e .
 fi
 
+PYTHON_BIN=${VENV_PYTHON:-python3}
+PYINSTALLER_CMD=${VENV_PYTHON:+.venv/bin/}:pyinstaller
+
 # 3. Install PyInstaller if not present
-if [ "$USE_UV" = true ]; then
-    # Use uv run to ensure detection within the uv-managed virtual environment
-    if ! uv run python -c "import PyInstaller" 2>/dev/null; then
-        echo "--> PyInstaller not found (uv env). Installing..."
-        uv pip install pyinstaller
-    fi
-else
-    if ! python3 -c "import PyInstaller" 2>/dev/null; then
-        echo "--> PyInstaller not found. Installing..."
-        python3 -m pip install pyinstaller
-    fi
+if ! $PYTHON_BIN -c "import PyInstaller" 2>/dev/null; then
+    echo "--> Installing PyInstaller..."
+    $PYTHON_BIN -m pip install pyinstaller
 fi
 
 # 4. Clean up previous builds
@@ -45,11 +44,7 @@ rm -rf dist/ build/
 
 # 5. Run PyInstaller build
 echo "--> Starting application build with PyInstaller..."
-if [ "$USE_UV" = true ]; then
-    uv run pyinstaller --clean --noconfirm --log-level INFO opencontext.spec
-else
-    pyinstaller --clean --noconfirm --log-level INFO opencontext.spec
-fi
+$PYTHON_BIN -m PyInstaller --clean --noconfirm --log-level INFO opencontext.spec
 
 # 6. Verify build and package
 echo "--> Verifying build output..."

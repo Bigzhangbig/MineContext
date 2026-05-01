@@ -4,21 +4,26 @@
 import { ReactNode } from 'react'
 import openAI from '../../assets/images/settings/OpenAI.png'
 import doubao from '../../assets/images/settings/doubao.png'
+import gemini from '../../assets/images/settings/Gemini.svg'
 import custom from '../../assets/images/settings/custom.svg'
 
 export enum ModelTypeList {
   Doubao = 'doubao',
   OpenAI = 'openai',
+  Gemini = 'gemini',
   Custom = 'custom'
 }
 
 export enum embeddingModels {
   DoubaoEmbeddingModelId = 'doubao-embedding-vision-250615',
-  OpenAIEmbeddingModelId = 'text-embedding-3-large'
+  OpenAIEmbeddingModelId = 'text-embedding-3-large',
+  GeminiEmbeddingModelId = 'gemini-embedding-2'
 }
 export enum BaseUrl {
   DoubaoUrl = 'https://ark.cn-beijing.volces.com/api/v3',
-  OpenAIUrl = 'https://api.openai.com/v1'
+  OpenAIUrl = 'https://api.openai.com/v1',
+  GeminiVLMUrl = 'https://generativelanguage.googleapis.com/v1beta/openai',
+  GeminiAPIUrl = 'https://generativelanguage.googleapis.com'
 }
 export interface OptionInfo {
   value: string
@@ -67,6 +72,21 @@ export const ModelInfoList = [
       {
         value: 'gpt-5-nano',
         label: 'GPT-5 Nano'
+      }
+    ]
+  },
+  {
+    icon: <img src={gemini} className="!max-w-none w-[24px] h-[24px]" />,
+    key: 'Gemini',
+    value: 'gemini',
+    option: [
+      {
+        value: 'gemini-2.5-flash',
+        label: 'Gemini 2.5 Flash'
+      },
+      {
+        value: 'gemini-2.5-pro',
+        label: 'Gemini 2.5 Pro'
       }
     ]
   },

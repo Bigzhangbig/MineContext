@@ -30,92 +30,50 @@ export interface CustomFormItemsProps {
 const CustomFormItems: FC<CustomFormItemsProps> = (props) => {
   const { prefix } = props
   return (
-    <>
-      <div className="flex flex-col gap-6 mb-6">
-        <div className="flex flex-col gap-[8px]">
-          <span className="text-[#0B0B0F] font-roboto text-base font-normal leading-[22px] ">
-            Vision language model
-          </span>
-          <FormItem
-            field={`${prefix}-modelId`}
-            className="!mb-0"
-            rules={[{ required: true, message: 'Cannot be empty' }]}
-            requiredSymbol={false}>
-            <Input
-              addBefore={<InputPrefix label="Model name" />}
-              placeholder="A VLM model with visual understanding capabilities is required."
-              allowClear
-              className="[&_.arco-input-inner-wrapper]: !w-[574px]"
-            />
-          </FormItem>
-          <FormItem
-            field={`${prefix}-baseUrl`}
-            className="!mb-0"
-            rules={[{ required: true, message: 'Cannot be empty' }]}
-            requiredSymbol={false}>
-            <Input
-              addBefore={<InputPrefix label="Base URL" />}
-              placeholder="Enter your base URL"
-              allowClear
-              className="[&_.arco-input-inner-wrapper]: !w-[574px]"
-            />
-          </FormItem>
-          <FormItem
-            field={`${prefix}-apiKey`}
-            className="!mb-0"
-            rules={[{ required: true, message: 'Cannot be empty' }]}
-            requiredSymbol={false}>
-            <Input.Password
-              addBefore={<InputPrefix label="API Key" />}
-              placeholder="Enter your API Key"
-              allowClear
-              className="!w-[574px]"
-              defaultVisibility={false}
-            />
-          </FormItem>
-        </div>
-        <div className="flex flex-col gap-[8px]">
-          <span className="text-[#0B0B0F] font-roboto text-base font-normal leading-[22px]">Embedding model</span>
-          <FormItem
-            field={`${prefix}-embeddingModelId`}
-            className="!mb-0"
-            rules={[{ required: true, message: 'Cannot be empty' }]}
-            requiredSymbol={false}>
-            <Input
-              addBefore={<InputPrefix label="Model name" />}
-              placeholder="Enter your embedding model name"
-              allowClear
-              className="!w-[574px]"
-            />
-          </FormItem>
-          <FormItem
-            field={`${prefix}-embeddingBaseUrl`}
-            className="!mb-0"
-            rules={[{ required: true, message: 'Cannot be empty' }]}
-            requiredSymbol={false}>
-            <Input
-              addBefore={<InputPrefix label="Base URL" />}
-              placeholder="Enter your base URL"
-              allowClear
-              className="!w-[574px]"
-            />
-          </FormItem>
-          <FormItem
-            field={`${prefix}-embeddingApiKey`}
-            className="!mb-0"
-            rules={[{ required: true, message: 'Cannot be empty' }]}
-            requiredSymbol={false}>
-            <Input.Password
-              addBefore={<InputPrefix label="API Key" />}
-              placeholder="Enter your API Key"
-              allowClear
-              className="!w-[574px]"
-              defaultVisibility={false}
-            />
-          </FormItem>
-        </div>
+    <div className="flex flex-col gap-6 mb-6">
+      <div className="flex flex-col gap-[8px]">
+        <span className="text-[#0B0B0F] font-roboto text-base font-normal leading-[22px] ">
+          Vision language model
+        </span>
+        <FormItem
+          field={`${prefix}-modelId`}
+          className="!mb-0"
+          rules={[{ required: true, message: 'Cannot be empty' }]}
+          requiredSymbol={false}>
+          <Input
+            addBefore={<InputPrefix label="Model name" />}
+            placeholder="A VLM model with visual understanding capabilities is required."
+            allowClear
+            className="[&_.arco-input-inner-wrapper]: !w-[574px]"
+          />
+        </FormItem>
+        <FormItem
+          field={`${prefix}-baseUrl`}
+          className="!mb-0"
+          rules={[{ required: true, message: 'Cannot be empty' }]}
+          requiredSymbol={false}>
+          <Input
+            addBefore={<InputPrefix label="Base URL" />}
+            placeholder="Enter your base URL"
+            allowClear
+            className="[&_.arco-input-inner-wrapper]: !w-[574px]"
+          />
+        </FormItem>
+        <FormItem
+          field={`${prefix}-apiKey`}
+          className="!mb-0"
+          rules={[{ required: true, message: 'Cannot be empty' }]}
+          requiredSymbol={false}>
+          <Input.Password
+            addBefore={<InputPrefix label="API Key" />}
+            placeholder="Enter your API Key"
+            allowClear
+            className="!w-[574px]"
+            defaultVisibility={false}
+          />
+        </FormItem>
       </div>
-    </>
+    </div>
   )
 }
 export interface StandardFormItemsProps {
@@ -160,11 +118,17 @@ const StandardFormItems: FC<StandardFormItemsProps> = (props) => {
                 const url =
                   modelPlatform === ModelTypeList.Doubao
                     ? 'https://www.volcengine.com/docs/82379/1541594'
-                    : 'https://platform.openai.com/settings/organization/api-keys'
+                    : modelPlatform === ModelTypeList.Gemini
+                      ? 'https://aistudio.google.com/apikey'
+                      : 'https://platform.openai.com/settings/organization/api-keys'
                 window.open(`${url}`)
               }}
               type="text">
-              {modelPlatform === ModelTypeList.Doubao ? 'Get Doubao API Key' : 'Get OpenAI API Key'}
+              {modelPlatform === ModelTypeList.Doubao
+                ? 'Get Doubao API Key'
+                : modelPlatform === ModelTypeList.Gemini
+                  ? 'Get Gemini API Key'
+                  : 'Get OpenAI API Key'}
             </Button>
           </div>
         }
@@ -191,19 +155,126 @@ const StandardFormItems: FC<StandardFormItemsProps> = (props) => {
   )
 }
 
-// 1. Add showCheckIcon state
-export interface SettingsFormBase {
-  modelPlatform: string
+export interface EmbeddingStandardFormItemsProps {
+  modelPlatform: ModelTypeList
+  prefix: string
+}
+const EmbeddingStandardFormItems: FC<EmbeddingStandardFormItemsProps> = (props) => {
+  const { modelPlatform, prefix } = props
+  const defaultEmbModel = useMemo(() => {
+    switch (modelPlatform) {
+      case ModelTypeList.Doubao:
+        return embeddingModels.DoubaoEmbeddingModelId
+      case ModelTypeList.OpenAI:
+        return embeddingModels.OpenAIEmbeddingModelId
+      case ModelTypeList.Gemini:
+        return embeddingModels.GeminiEmbeddingModelId
+      default:
+        return ''
+    }
+  }, [modelPlatform])
+
+  return (
+    <div className="flex flex-col gap-6 mb-6">
+      <div className="flex flex-col gap-[8px]">
+        <FormItem
+          field={`${prefix}-embeddingModelId`}
+          className="!mb-0"
+          requiredSymbol={false}
+          extra={
+            <Text type="secondary" className="text-[12px]">
+              Default: {defaultEmbModel}
+            </Text>
+          }>
+          <Input placeholder={defaultEmbModel || 'Enter embedding model name'} allowClear className="!w-[574px]" />
+        </FormItem>
+        <FormItem
+          field={`${prefix}-embeddingApiKey`}
+          className="!mb-0"
+          requiredSymbol={false}
+          extra={
+            <Text type="secondary" className="text-[12px]">
+              Leave empty to use the VLM API key
+            </Text>
+          }>
+          <Input.Password
+            placeholder="Enter embedding API key (optional)"
+            allowClear
+            className="!w-[574px]"
+            defaultVisibility={false}
+          />
+        </FormItem>
+      </div>
+    </div>
+  )
 }
 
-export type SettingsFormProps = SettingsFormBase & {
-  [K in ModelTypeList as `${K}-modelId` | `${K}-apiKey`]?: string
-} & {
-  [K in
-    | `${ModelTypeList.Custom}-embeddingModelId`
-    | `${ModelTypeList.Custom}-embeddingBaseUrl`
-    | `${ModelTypeList.Custom}-embeddingApiKey`]?: string
+export interface EmbeddingCustomFormItemsProps {
+  prefix: string
 }
+const EmbeddingCustomFormItems: FC<EmbeddingCustomFormItemsProps> = (props) => {
+  const { prefix } = props
+  return (
+    <div className="flex flex-col gap-6 mb-6">
+      <div className="flex flex-col gap-[8px]">
+        <FormItem
+          field={`${prefix}-embeddingModelId`}
+          className="!mb-0"
+          rules={[{ required: true, message: 'Cannot be empty' }]}
+          requiredSymbol={false}>
+          <Input
+            addBefore={<InputPrefix label="Model name" />}
+            placeholder="Enter your embedding model name"
+            allowClear
+            className="!w-[574px]"
+          />
+        </FormItem>
+        <FormItem
+          field={`${prefix}-embeddingBaseUrl`}
+          className="!mb-0"
+          rules={[{ required: true, message: 'Cannot be empty' }]}
+          requiredSymbol={false}>
+          <Input
+            addBefore={<InputPrefix label="Base URL" />}
+            placeholder="Enter your base URL"
+            allowClear
+            className="!w-[574px]"
+          />
+        </FormItem>
+        <FormItem
+          field={`${prefix}-embeddingApiKey`}
+          className="!mb-0"
+          requiredSymbol={false}>
+          <Input.Password
+            addBefore={<InputPrefix label="API Key" />}
+            placeholder="Enter your API Key (leave empty to use VLM key)"
+            allowClear
+            className="!w-[574px]"
+            defaultVisibility={false}
+          />
+        </FormItem>
+      </div>
+    </div>
+  )
+}
+
+export interface SettingsFormBase {
+  modelPlatform: string
+  embeddingModelPlatform: string
+}
+
+type VlmFormFields = {
+  [K in ModelTypeList as `${K}-modelId` | `${K}-apiKey` | `${K}-baseUrl`]?: string
+}
+
+type EmbeddingFormFields = {
+  [K in ModelTypeList as
+    | `emb-${K}-embeddingModelId`
+    | `emb-${K}-embeddingApiKey`
+    | `emb-${K}-embeddingBaseUrl`]?: string
+}
+
+export type SettingsFormProps = SettingsFormBase & VlmFormFields & EmbeddingFormFields
 const Settings: FC<SettingsProps> = (props) => {
   const { closeSetting, init } = props
 
@@ -228,34 +299,92 @@ const Settings: FC<SettingsProps> = (props) => {
     try {
       await form.validate()
       const values = form.getFieldsValue()
-      const isCustom = values.modelPlatform === ModelTypeList.Custom
-      if (!values.modelPlatform) {
-        Message.error('Please select Model Platform')
+      const vlmPlatform = values.modelPlatform
+      const embPlatform = values.embeddingModelPlatform
+
+      if (!vlmPlatform) {
+        Message.error('Please select a Vision Language Model platform')
         return
       }
-      const commonKey = [
-        'modelPlatform',
-        `${values.modelPlatform}-modelId`,
-        `${values.modelPlatform}-apiKey`,
-        `${values.modelPlatform}-baseUrl`,
-        `${values.modelPlatform}-embeddingModelId`,
-        `${values.modelPlatform}-embeddingBaseUrl`,
-        `${values.modelPlatform}-embeddingApiKey`
-      ]
-      const data = pick(values, commonKey)
-      const formatData = Object.fromEntries(
-        Object.entries(data).map(([key, value]) => [key.replace(`${values.modelPlatform}-`, ''), value])
+      if (!embPlatform) {
+        Message.error('Please select an Embedding Model platform')
+        return
+      }
+
+      // --- VLM params ---
+      const isVlmCustom = vlmPlatform === ModelTypeList.Custom
+      const vlmRaw = pick(values, [
+        `${vlmPlatform}-modelId`,
+        `${vlmPlatform}-apiKey`,
+        `${vlmPlatform}-baseUrl`
+      ])
+      const vlmFields = Object.fromEntries(
+        Object.entries(vlmRaw).map(([key, value]) => [key.replace(`${vlmPlatform}-`, ''), value])
       )
-      const params = isCustom
-        ? formatData
+
+      const getVlmBaseUrl = (p: string): string => {
+        switch (p) {
+          case ModelTypeList.Doubao:
+            return BaseUrl.DoubaoUrl
+          case ModelTypeList.Gemini:
+            return BaseUrl.GeminiVLMUrl
+          default:
+            return BaseUrl.OpenAIUrl
+        }
+      }
+
+      const vlmParams = isVlmCustom
+        ? vlmFields
+        : { ...vlmFields, baseUrl: getVlmBaseUrl(vlmPlatform) }
+
+      // --- Embedding params ---
+      const isEmbCustom = embPlatform === ModelTypeList.Custom
+      const embPrefix = `emb-${embPlatform}`
+      const embRaw = pick(values, [
+        `${embPrefix}-embeddingModelId`,
+        `${embPrefix}-embeddingApiKey`,
+        `${embPrefix}-embeddingBaseUrl`
+      ])
+      const embFields = Object.fromEntries(
+        Object.entries(embRaw).map(([key, value]) => [key.replace(`${embPrefix}-`, ''), value])
+      )
+
+      const getDefaultEmbModel = (p: string): string => {
+        switch (p) {
+          case ModelTypeList.Doubao:
+            return embeddingModels.DoubaoEmbeddingModelId
+          case ModelTypeList.Gemini:
+            return embeddingModels.GeminiEmbeddingModelId
+          default:
+            return embeddingModels.OpenAIEmbeddingModelId
+        }
+      }
+
+      const getEmbBaseUrl = (p: string): string => {
+        switch (p) {
+          case ModelTypeList.Doubao:
+            return BaseUrl.DoubaoUrl
+          case ModelTypeList.Gemini:
+            return BaseUrl.GeminiAPIUrl
+          default:
+            return BaseUrl.OpenAIUrl
+        }
+      }
+
+      const embParams = isEmbCustom
+        ? embFields
         : {
-            ...formatData,
-            baseUrl: values.modelPlatform === ModelTypeList.Doubao ? BaseUrl.DoubaoUrl : BaseUrl.OpenAIUrl,
-            embeddingModelId:
-              values.modelPlatform === ModelTypeList.Doubao
-                ? embeddingModels.DoubaoEmbeddingModelId
-                : embeddingModels.OpenAIEmbeddingModelId
+            ...embFields,
+            embeddingModelId: embFields.embeddingModelId || getDefaultEmbModel(embPlatform),
+            embeddingBaseUrl: embFields.embeddingBaseUrl || getEmbBaseUrl(embPlatform)
           }
+
+      const params = {
+        modelPlatform: vlmPlatform,
+        ...vlmParams,
+        ...embParams,
+        embeddingModelPlatform: embPlatform !== vlmPlatform ? embPlatform : undefined
+      }
 
       updateModelSettings(params as unknown as ModelConfigProps)
     } catch (error: any) {}
@@ -266,16 +395,37 @@ const Settings: FC<SettingsProps> = (props) => {
   })
   useEffect(() => {
     const config = get(modelInfo, 'config')
-    if (!getInfoLoading && !isEmpty(config) && !init) {
+    if (getInfoLoading || isEmpty(config)) return
+
+    if (init) {
+      // Auto-close settings if model is already configured
+      if (config.modelPlatform && config.modelId && config.apiKey) {
+        closeSetting?.()
+        return
+      }
+    } else {
       const settingsValue = new Map<keyof SettingsFormProps, string>()
-      const prefix = config.modelPlatform as ModelTypeList
-      settingsValue.set(`modelPlatform`, prefix)
-      Object.keys(config).reduce((acc, key) => {
-        if (!acc.has(`${prefix}-${key}` as keyof SettingsFormProps) && !!config[key]) {
-          acc.set(`${prefix}-${key}` as keyof SettingsFormProps, config[key])
+
+      const vlmPlatform = (config.modelPlatform || ModelTypeList.Doubao) as ModelTypeList
+      settingsValue.set('modelPlatform', vlmPlatform)
+
+      const vlmConfigKeys = ['modelId', 'apiKey', 'baseUrl'] as const
+      vlmConfigKeys.forEach((key) => {
+        if (config[key]) {
+          settingsValue.set(`${vlmPlatform}-${key}` as keyof SettingsFormProps, config[key])
         }
-        return acc
-      }, settingsValue)
+      })
+
+      const embPlatform = (config.embeddingModelPlatform || vlmPlatform) as ModelTypeList
+      settingsValue.set('embeddingModelPlatform', embPlatform)
+
+      const embConfigKeys = ['embeddingModelId', 'embeddingApiKey', 'embeddingBaseUrl'] as const
+      embConfigKeys.forEach((key) => {
+        if (config[key]) {
+          settingsValue.set(`emb-${embPlatform}-${key}` as keyof SettingsFormProps, config[key])
+        }
+      })
+
       form.setFieldsValue(Object.fromEntries(settingsValue))
     }
   }, [modelInfo, getInfoLoading])
@@ -298,8 +448,13 @@ const Settings: FC<SettingsProps> = (props) => {
               form={form}
               initialValues={{
                 modelPlatform: ModelTypeList.Doubao,
+                embeddingModelPlatform: ModelTypeList.Doubao,
                 [`${ModelTypeList.Doubao}-modelId`]: 'doubao-seed-1-6-flash-250828',
-                [`${ModelTypeList.OpenAI}-modelId`]: 'gpt-5-nano'
+                [`${ModelTypeList.OpenAI}-modelId`]: 'gpt-5-nano',
+                [`${ModelTypeList.Gemini}-modelId`]: 'gemini-2.5-flash',
+                [`emb-${ModelTypeList.Doubao}-embeddingModelId`]: embeddingModels.DoubaoEmbeddingModelId,
+                [`emb-${ModelTypeList.OpenAI}-embeddingModelId`]: embeddingModels.OpenAIEmbeddingModelId,
+                [`emb-${ModelTypeList.Gemini}-embeddingModelId`]: embeddingModels.GeminiEmbeddingModelId
               }}>
               <FormItem label="Model platform" field={'modelPlatform'} requiredSymbol={false}>
                 <ModelRadio />
@@ -313,8 +468,38 @@ const Settings: FC<SettingsProps> = (props) => {
                     return <CustomFormItems prefix={ModelTypeList.Custom} />
                   } else if (modelPlatform === ModelTypeList.Doubao) {
                     return <StandardFormItems modelPlatform={modelPlatform} prefix={ModelTypeList.Doubao} />
+                  } else if (modelPlatform === ModelTypeList.Gemini) {
+                    return <StandardFormItems modelPlatform={modelPlatform} prefix={ModelTypeList.Gemini} />
                   } else if (modelPlatform === ModelTypeList.OpenAI) {
                     return <StandardFormItems modelPlatform={modelPlatform} prefix={ModelTypeList.OpenAI} />
+                  } else {
+                    return null
+                  }
+                }}
+              </FormItem>
+              <div className="mt-6 mb-[12px]">
+                <span className="text-[#0B0B0F] font-roboto text-base font-normal leading-[22px]">
+                  Embedding model
+                </span>
+              </div>
+              <FormItem label="Embedding platform" field={'embeddingModelPlatform'} requiredSymbol={false}>
+                <ModelRadio />
+              </FormItem>
+              <FormItem
+                shouldUpdate={(prevValues, currentValues) =>
+                  prevValues.embeddingModelPlatform !== currentValues.embeddingModelPlatform
+                }
+                noStyle>
+                {(values) => {
+                  const embPlatform = values.embeddingModelPlatform
+                  if (embPlatform === ModelTypeList.Custom) {
+                    return <EmbeddingCustomFormItems prefix="emb-custom" />
+                  } else if (embPlatform === ModelTypeList.Doubao) {
+                    return <EmbeddingStandardFormItems modelPlatform={embPlatform} prefix="emb-doubao" />
+                  } else if (embPlatform === ModelTypeList.Gemini) {
+                    return <EmbeddingStandardFormItems modelPlatform={embPlatform} prefix="emb-gemini" />
+                  } else if (embPlatform === ModelTypeList.OpenAI) {
+                    return <EmbeddingStandardFormItems modelPlatform={embPlatform} prefix="emb-openai" />
                   } else {
                     return null
                   }
