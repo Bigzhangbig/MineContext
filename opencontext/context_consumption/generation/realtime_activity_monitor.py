@@ -65,14 +65,18 @@ class RealtimeActivityMonitor:
             # Get context data
             contexts = self._get_recent_contexts(start_time, end_time)
             if not contexts:
-                logger.info("No activity records found in the time range %s to %s.", start_time, end_time)
+                logger.info(
+                    "No activity records found in the time range %s to %s.", start_time, end_time
+                )
                 return None
 
             # Generate an activity summary, including categories, insights, and the most valuable context IDs
             all_context = []
             for context_type, ctx_list in contexts.items():
                 all_context.extend(ctx_list)
-            logger.info(f"{len(all_context)} activity records found in the time range {start_time} to {end_time}.")
+            logger.info(
+                f"{len(all_context)} activity records found in the time range {start_time} to {end_time}."
+            )
             summary_result = self._generate_concise_summary(contexts, start_time, end_time)
 
             if not summary_result:
@@ -206,35 +210,10 @@ class RealtimeActivityMonitor:
             try:
                 from opencontext.utils.json_parser import parse_json_from_response
 
-                summary_result = parse_json_from_response(response)
-
-                # Validate and normalize the category distribution
-                category_dist = summary_result.get("category_distribution", {})
-                if category_dist:
-                    total = sum(category_dist.values())
-                    if total > 0:
-                        category_dist = {k: round(v / total, 2) for k, v in category_dist.items()}
-
-                return {
-                    "title": summary_result.get("title", "Recent Activities"),
-                    "description": summary_result.get(
-                        "description", "Detected various user activities."
-                    ),
-                    "representative_context_ids": summary_result.get(
-                        "representative_context_ids", []
-                    ),
-                    "category_distribution": category_dist,
-                    "extracted_insights": summary_result.get(
-                        "extracted_insights",
-                        {
-                            "potential_todos": [],
-                            "tip_suggestions": [],
-                            "key_entities": [],
-                            "focus_areas": [],
-                            "work_patterns": {},
-                        },
-                    ),
-                }
+                return self._normalize_summary_response(
+                    parse_json_from_response(response),
+                    fallback_description=response,
+                )
             except Exception as e:
                 logger.error(f"Failed to parse JSON response: {e}")
                 # Fallback: generate a basic summary
@@ -243,6 +222,74 @@ class RealtimeActivityMonitor:
         except Exception as e:
             logger.exception(f"Failed to generate concise activity summary: {e}")
             return None
+
+    @staticmethod
+    def _default_insights() -> Dict[str, Any]:
+        return {
+            "potential_todos": [],
+            "tip_suggestions": [],
+            "key_entities": [],
+            "focus_areas": [],
+            "work_patterns": {},
+        }
+
+    @classmethod
+    def _normalize_summary_response(
+        cls,
+        summary_result: Any,
+        fallback_description: str = "Detected various user activities.",
+    ) -> ActivitySummaryResult:
+        if isinstance(summary_result, list):
+            summary_result = next((item for item in summary_result if isinstance(item, dict)), None)
+
+        if not isinstance(summary_result, dict):
+            if isinstance(summary_result, str):
+                description = summary_result
+            else:
+                description = fallback_description if isinstance(fallback_description, str) else ""
+            logger.warning(
+                "Falling back to unstructured activity summary response. "
+                f"parsed_type={type(summary_result).__name__}"
+            )
+            return {
+                "title": "Recent Activities",
+                "description": description[:1000] or "Detected various user activities.",
+                "representative_context_ids": [],
+                "category_distribution": {},
+                "extracted_insights": cls._default_insights(),
+            }
+
+        category_dist = summary_result.get("category_distribution", {})
+        if not isinstance(category_dist, dict):
+            category_dist = {}
+        if category_dist:
+            numeric_dist = {
+                key: value
+                for key, value in category_dist.items()
+                if isinstance(value, (int, float))
+            }
+            total = sum(numeric_dist.values())
+            category_dist = (
+                {key: round(value / total, 2) for key, value in numeric_dist.items()}
+                if total > 0
+                else {}
+            )
+
+        representative_ids = summary_result.get("representative_context_ids", [])
+        if not isinstance(representative_ids, list):
+            representative_ids = []
+
+        extracted_insights = summary_result.get("extracted_insights", cls._default_insights())
+        if not isinstance(extracted_insights, dict):
+            extracted_insights = cls._default_insights()
+
+        return {
+            "title": summary_result.get("title", "Recent Activities"),
+            "description": summary_result.get("description", "Detected various user activities."),
+            "representative_context_ids": representative_ids,
+            "category_distribution": category_dist,
+            "extracted_insights": extracted_insights,
+        }
 
     def _find_contexts_by_ids(
         self, contexts: List[ProcessedContext], recommended_ids: List[str]

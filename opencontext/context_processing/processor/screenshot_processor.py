@@ -7,6 +7,7 @@
 """
 Screenshot processor
 """
+
 import asyncio
 import base64
 import datetime
@@ -14,6 +15,7 @@ import heapq
 import json
 import os
 import queue
+import re
 import threading
 import time
 from collections import deque
@@ -61,7 +63,6 @@ class ScreenshotProcessor(BaseContextProcessor):
         config = get_config("processing.screenshot_processor") or {}
         super().__init__(config)
 
-
         self._similarity_hash_threshold = self.config.get("similarity_hash_threshold", 2)
         self._batch_size = self.config.get("batch_size", 10)
         self._batch_timeout = self.config.get("batch_timeout", 20)  # seconds
@@ -78,9 +79,7 @@ class ScreenshotProcessor(BaseContextProcessor):
         self._processing_task.start()
 
         # State cache
-        self._processed_cache = (
-            {}
-        )
+        self._processed_cache = {}
         self._current_screenshot = deque(maxlen=self._batch_size * 2)
 
     def shutdown(self, graceful: bool = False):
@@ -175,6 +174,7 @@ class ScreenshotProcessor(BaseContextProcessor):
             increment_recording_stat,
             record_processing_metrics,
         )
+
         """Background processing loop for handling screenshots in input queue."""
         unprocessed_contexts = []
         last_process_time = int(time.time())
@@ -201,14 +201,16 @@ class ScreenshotProcessor(BaseContextProcessor):
             start_time = time.time()
             increment_data_count("screenshot", count=len(unprocessed_contexts))
             try:
-                processed_contexts =  asyncio.run(self.batch_process(unprocessed_contexts))
+                processed_contexts = asyncio.run(self.batch_process(unprocessed_contexts))
                 if processed_contexts:
                     get_storage().batch_upsert_processed_context(processed_contexts)
             except Exception as e:
                 error_msg = f"Failed during concurrent VLM processing: {e}"
                 logger.error(error_msg)
                 record_processing_error(
-                    error_msg, processor_name=self.get_name(), context_count=len(unprocessed_contexts)
+                    error_msg,
+                    processor_name=self.get_name(),
+                    context_count=len(unprocessed_contexts),
                 )
                 increment_recording_stat("failed", len(unprocessed_contexts))
                 continue
@@ -223,7 +225,9 @@ class ScreenshotProcessor(BaseContextProcessor):
 
                 # Record context count by type
                 for context in processed_contexts:
-                    increment_data_count("context", count=1, context_type=context.extracted_data.context_type.value)
+                    increment_data_count(
+                        "context", count=1, context_type=context.extracted_data.context_type.value
+                    )
 
                 # Increment processed screenshots count
                 increment_recording_stat("processed", len(processed_contexts))
@@ -233,13 +237,13 @@ class ScreenshotProcessor(BaseContextProcessor):
             unprocessed_contexts.clear()
             last_process_time = int(time.time())
 
-    async def _process_vlm_single(self, raw_context: RawContextProperties) -> List[ProcessedContext]:
+    async def _process_vlm_single(
+        self, raw_context: RawContextProperties
+    ) -> List[ProcessedContext]:
         """
         Process a single screenshot with VLM
         """
-        prompt_group = get_prompt_group(
-            "processing.extraction.screenshot_analyze"
-        )
+        prompt_group = get_prompt_group("processing.extraction.screenshot_analyze")
         system_prompt = prompt_group.get("system")
         user_prompt_template = prompt_group.get("user")
         if not system_prompt or not user_prompt_template:
@@ -282,25 +286,361 @@ class ScreenshotProcessor(BaseContextProcessor):
             {"role": "user", "content": content},
         ]
 
-        raw_llm_response = ''
+        raw_llm_response = ""
         try:
             raw_llm_response = await generate_with_messages_async(messages)
         except Exception as e:
-            logger.error(f"Failed to get VLM response. Error: {e}")
-            raise ValueError(f"Failed to get VLM response. Error: {e}")
+            logger.exception(
+                "Failed to get VLM response. "
+                f"Error: {e}; screenshot={self._describe_raw_context(raw_context)}"
+            )
+            raise ValueError(
+                f"Failed to get VLM response. Error: {e}; "
+                f"screenshot={self._describe_raw_context(raw_context)}"
+            )
 
         raw_resp = parse_json_from_response(raw_llm_response)
-        if not raw_resp:
-            logger.error(f"Empty VLM response.")
-            raise ValueError(f"Empty VLM response.")
-        
-        items = raw_resp.get("items", [])
+        items = self._normalize_vlm_response(raw_resp, raw_context, raw_llm_response)
         processed_items = []
         for item in items:
-            processed_items.append(self._create_processed_context(item, raw_context))
+            processed_context = self._create_processed_context(item, raw_context)
+            if processed_context:
+                processed_items.append(processed_context)
         return processed_items
 
-    async def _merge_contexts(self, processed_items: List[ProcessedContext]) -> List[ProcessedContext]:
+    @staticmethod
+    def _preview_response(response: Any, limit: int = 1200) -> str:
+        """Return a bounded, single-line preview for diagnostic logs."""
+        if response is None:
+            return "<None>"
+        if not isinstance(response, str):
+            try:
+                response = json.dumps(response, ensure_ascii=False)
+            except TypeError:
+                response = repr(response)
+        response = response.replace("\n", "\\n").replace("\r", "\\r")
+        if len(response) > limit:
+            return response[:limit] + "...<truncated>"
+        return response
+
+    @staticmethod
+    def _describe_raw_context(raw_context: Optional[RawContextProperties]) -> str:
+        """Describe a screenshot context without logging image bytes."""
+        if not raw_context:
+            return "<missing>"
+        image_path = raw_context.content_path or ""
+        try:
+            file_size = (
+                os.path.getsize(image_path) if image_path and os.path.exists(image_path) else None
+            )
+        except OSError:
+            file_size = None
+        return (
+            f"object_id={raw_context.object_id}, "
+            f"path={image_path}, "
+            f"exists={os.path.exists(image_path) if image_path else False}, "
+            f"size={file_size}, "
+            f"create_time={raw_context.create_time.isoformat() if raw_context.create_time else None}, "
+            f"additional_info={raw_context.additional_info or {}}"
+        )
+
+    @classmethod
+    def _normalize_vlm_response(
+        cls,
+        raw_resp: Any,
+        raw_context: Optional[RawContextProperties] = None,
+        raw_llm_response: Any = None,
+    ) -> List[Dict[str, Any]]:
+        """Validate and normalize the VLM response into screenshot analysis items."""
+        response_preview = cls._preview_response(raw_llm_response)
+        context_desc = cls._describe_raw_context(raw_context)
+
+        logger.debug(
+            "VLM response parsed. "
+            f"parsed_type={type(raw_resp).__name__}; screenshot={context_desc}; "
+            f"raw_preview={response_preview}"
+        )
+
+        if raw_resp is None:
+            fallback_items = cls._fallback_vlm_text_response(
+                raw_llm_response,
+                context_desc=context_desc,
+                reason="parser returned None",
+            )
+            if fallback_items:
+                return fallback_items
+            error_msg = (
+                "Empty VLM response: parser returned None. "
+                f"screenshot={context_desc}; raw_preview={response_preview}"
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+        if isinstance(raw_resp, list):
+            flattened_items = cls._flatten_items_response(raw_resp)
+            if not flattened_items:
+                fallback_items = cls._fallback_vlm_text_response(
+                    raw_resp,
+                    raw_llm_response=raw_llm_response,
+                    context_desc=context_desc,
+                    reason="top-level list contained no object items",
+                )
+                if fallback_items:
+                    return fallback_items
+            raw_resp = {"items": flattened_items}
+
+        if not isinstance(raw_resp, dict):
+            fallback_items = cls._fallback_vlm_text_response(
+                raw_resp,
+                raw_llm_response=raw_llm_response,
+                context_desc=context_desc,
+                reason=f"expected object, got {type(raw_resp).__name__}",
+            )
+            if fallback_items:
+                return fallback_items
+            error_msg = (
+                f"Expected VLM JSON object, got {type(raw_resp).__name__}. "
+                f"screenshot={context_desc}; raw_preview={response_preview}"
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+        if "items" not in raw_resp:
+            if cls._looks_like_vlm_item(raw_resp):
+                raw_resp = {"items": [raw_resp]}
+            else:
+                fallback_items = cls._fallback_vlm_text_response(
+                    raw_resp,
+                    raw_llm_response=raw_llm_response,
+                    context_desc=context_desc,
+                    reason="missing items",
+                )
+                if fallback_items:
+                    return fallback_items
+                error_msg = (
+                    "Invalid VLM response: missing 'items'. "
+                    f"keys={list(raw_resp.keys())}; screenshot={context_desc}; "
+                    f"raw_preview={response_preview}"
+                )
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+
+        items = raw_resp.get("items")
+        if isinstance(items, dict):
+            items = [items]
+        elif items is None:
+            fallback_items = cls._fallback_vlm_text_response(
+                raw_resp,
+                raw_llm_response=raw_llm_response,
+                context_desc=context_desc,
+                reason="items is null",
+            )
+            if fallback_items:
+                return fallback_items
+            error_msg = (
+                "Invalid VLM response: 'items' is null. "
+                f"screenshot={context_desc}; raw_preview={response_preview}"
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+        if not isinstance(items, list):
+            fallback_items = cls._fallback_vlm_text_response(
+                items,
+                raw_llm_response=raw_llm_response,
+                context_desc=context_desc,
+                reason=f"items must be a list, got {type(items).__name__}",
+            )
+            if fallback_items:
+                return fallback_items
+            error_msg = (
+                f"Invalid VLM response: 'items' must be a list, got {type(items).__name__}. "
+                f"screenshot={context_desc}; raw_preview={response_preview}"
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+        normalized_items = []
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                logger.warning(
+                    "Skipping invalid VLM item. "
+                    f"index={index}; item_type={type(item).__name__}; "
+                    f"screenshot={context_desc}; raw_preview={response_preview}"
+                )
+                continue
+            normalized_items.append(item)
+
+        if not normalized_items:
+            fallback_items = cls._fallback_vlm_text_response(
+                items,
+                raw_llm_response=raw_llm_response,
+                context_desc=context_desc,
+                reason="items contained no valid objects",
+            )
+            if fallback_items:
+                return fallback_items
+
+        logger.info(
+            f"VLM response normalized: {len(normalized_items)} item(s). "
+            f"screenshot={context_desc}"
+        )
+        return normalized_items
+
+    @staticmethod
+    def _looks_like_vlm_item(item: Dict[str, Any]) -> bool:
+        item_keys = {
+            "context_type",
+            "title",
+            "summary",
+            "keywords",
+            "entities",
+            "importance",
+            "confidence",
+            "event_time",
+        }
+        return any(key in item for key in item_keys)
+
+    @classmethod
+    def _fallback_vlm_text_response(
+        cls,
+        raw_response: Any,
+        raw_llm_response: Any = None,
+        context_desc: str = "<missing>",
+        reason: str = "unstructured response",
+    ) -> List[Dict[str, Any]]:
+        text = cls._extract_unstructured_vlm_text(raw_response)
+        if not text and raw_llm_response is not None:
+            text = cls._extract_unstructured_vlm_text(raw_llm_response)
+        if not text:
+            return []
+
+        summary = text[:1000]
+        title_source = summary.splitlines()[0].strip()
+        title = title_source[:80] if title_source else "Unstructured screenshot analysis"
+        logger.warning(
+            "Falling back to unstructured VLM text response. "
+            f"reason={reason}; screenshot={context_desc}; summary_preview={cls._preview_response(summary)}"
+        )
+        return [
+            {
+                "context_type": "activity_context",
+                "title": title or "Unstructured screenshot analysis",
+                "summary": summary,
+                "keywords": ["llm_unstructured_response"],
+                "entities": [],
+                "importance": 3,
+                "confidence": 3,
+            }
+        ]
+
+    @classmethod
+    def _extract_unstructured_vlm_text(cls, response: Any) -> str:
+        if response is None:
+            return ""
+        if isinstance(response, str):
+            text = response
+        elif isinstance(response, list):
+            parts = []
+            for entry in response:
+                if isinstance(entry, str):
+                    parts.append(entry)
+                elif isinstance(entry, dict):
+                    for key in ("summary", "description", "content", "title"):
+                        value = entry.get(key)
+                        if isinstance(value, str):
+                            parts.append(value)
+            text = "\n".join(parts)
+        elif isinstance(response, dict):
+            parts = []
+            for key in ("summary", "description", "content", "title", "text"):
+                value = response.get(key)
+                if isinstance(value, str):
+                    parts.append(value)
+            text = "\n".join(parts)
+        else:
+            text = str(response)
+
+        text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE)
+        if "<think>" in text.lower():
+            text = re.split(r"</?think>", text, flags=re.IGNORECASE)[-1]
+        for marker in (
+            "现在生成context：",
+            "现在生成 context：",
+            "生成context：",
+            "生成 context：",
+        ):
+            if marker in text:
+                text = text.split(marker, 1)[1]
+                break
+        text = re.sub(r"```(?:json)?|```", "", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
+
+    @classmethod
+    def _flatten_items_response(cls, response_data: List[Any]) -> List[Dict[str, Any]]:
+        """Normalize an LLM top-level JSON array into an items list."""
+        flattened: List[Dict[str, Any]] = []
+        for entry in response_data:
+            if isinstance(entry, dict) and isinstance(entry.get("items"), list):
+                flattened.extend(item for item in entry["items"] if isinstance(item, dict))
+            elif isinstance(entry, dict):
+                flattened.append(entry)
+        return flattened
+
+    @classmethod
+    def _fallback_merge_response(cls, fallback_items: List[ProcessedContext]) -> Dict[str, Any]:
+        return {
+            "items": [
+                {
+                    "merge_type": "new",
+                    "merged_ids": [item.id],
+                    "data": {
+                        "title": item.extracted_data.title or "",
+                        "summary": item.extracted_data.summary or "",
+                        "keywords": item.extracted_data.keywords or [],
+                        "entities": item.extracted_data.entities or [],
+                        "importance": item.extracted_data.importance,
+                        "confidence": item.extracted_data.confidence,
+                        "event_time": (
+                            item.properties.event_time.isoformat()
+                            if item.properties.event_time
+                            else None
+                        ),
+                    },
+                }
+                for item in fallback_items
+            ]
+        }
+
+    @classmethod
+    def _normalize_merge_response(
+        cls,
+        response_data: Any,
+        context_type: ContextType,
+        fallback_items: List[ProcessedContext],
+    ) -> Dict[str, Any]:
+        """Normalize screenshot merge LLM output, falling back to independent new items."""
+        if isinstance(response_data, list):
+            flattened = cls._flatten_items_response(response_data)
+            response_data = {"items": flattened} if flattened else None
+
+        if not isinstance(response_data, dict) or not isinstance(response_data.get("items"), list):
+            logger.error(f"merge_items_with_llm, Invalid response format: {response_data}")
+            return cls._fallback_merge_response(fallback_items)
+
+        valid_items = [item for item in response_data["items"] if isinstance(item, dict)]
+        if not valid_items:
+            logger.error(
+                f"merge_items_with_llm, No valid merge items for context type: {context_type.value}"
+            )
+            return cls._fallback_merge_response(fallback_items)
+
+        return {"items": valid_items}
+
+    async def _merge_contexts(
+        self, processed_items: List[ProcessedContext]
+    ) -> List[ProcessedContext]:
         """
         Merge newly processed items with cached items based on context_type semantics.
         """
@@ -312,6 +652,10 @@ class ScreenshotProcessor(BaseContextProcessor):
         for item in processed_items:
             context_type = item.extracted_data.context_type
             items_by_type.setdefault(context_type, []).append(item)
+        logger.debug(
+            "Merging VLM items by context type: "
+            f"{ {context_type.value: len(items) for context_type, items in items_by_type.items()} }"
+        )
 
         tasks = []
         for context_type, new_items in items_by_type.items():
@@ -323,7 +667,9 @@ class ScreenshotProcessor(BaseContextProcessor):
         all_newly_created = []
         for idx, result in enumerate(results):
             if isinstance(result, Exception):
-                logger.error(f"Merge task {idx} failed with error: {result} for context type: {context_type.value}")
+                logger.error(
+                    f"Merge task {idx} failed with error: {result} for context type: {context_type.value}"
+                )
                 continue
             if result:
                 context_type = result.get("context_type")
@@ -333,32 +679,40 @@ class ScreenshotProcessor(BaseContextProcessor):
                     get_storage().delete_processed_context(item_id, context_type)
         return all_newly_created
 
-    async def _merge_items_with_llm(self, context_type: ContextType, new_items: List[ProcessedContext], cached_items: List[ProcessedContext]) -> Dict[str, Any]:
+    async def _merge_items_with_llm(
+        self,
+        context_type: ContextType,
+        new_items: List[ProcessedContext],
+        cached_items: List[ProcessedContext],
+    ) -> Dict[str, Any]:
         """
         Call LLM to merge items and directly return ProcessedContext objects.
         Handles both merged (multiple items -> one) and new (independent) items.
         """
         prompt_group = get_prompt_group("merging.screenshot_batch_merging")
         all_items_map = {item.id: item for item in new_items + cached_items}
-        items_json = json.dumps([self._item_to_dict(item) for item in new_items + cached_items], ensure_ascii=False, indent=2)
+        items_json = json.dumps(
+            [self._item_to_dict(item) for item in new_items + cached_items],
+            ensure_ascii=False,
+            indent=2,
+        )
 
         messages = [
             {"role": "system", "content": prompt_group["system"]},
-            {"role": "user", "content": prompt_group["user"].format(
-                context_type=context_type.value,
-                items_json=items_json
-            )},
+            {
+                "role": "user",
+                "content": prompt_group["user"].format(
+                    context_type=context_type.value, items_json=items_json
+                ),
+            },
         ]
         response = await generate_with_messages_async(messages)
 
-
-        if not response:
-            raise ValueError(f"Empty LLM response when merge items for context type: {context_type.value}")
-
-        response_data = parse_json_from_response(response)
-        if not isinstance(response_data, dict) or "items" not in response_data:
-            logger.error(f"merge_items_with_llm, Invalid response format: {response_data}")
-            raise ValueError(f"Invalid response format when merge items for context type: {context_type.value}")
+        response_data = self._normalize_merge_response(
+            parse_json_from_response(response),
+            context_type=context_type,
+            fallback_items=new_items,
+        )
 
         # Process results and build ProcessedContext objects
         result_contexts = []
@@ -383,10 +737,20 @@ class ScreenshotProcessor(BaseContextProcessor):
                     logger.error(f"No valid items for merged_ids: {merged_ids}")
                     continue
 
-                min_create_time = min((i.properties.create_time for i in items_to_merge if i.properties.create_time), default=now)
+                min_create_time = min(
+                    (i.properties.create_time for i in items_to_merge if i.properties.create_time),
+                    default=now,
+                )
                 event_time = self._parse_event_time_str(
                     data.get("event_time"),
-                    max((i.properties.event_time for i in items_to_merge if i.properties.event_time), default=now)
+                    max(
+                        (
+                            i.properties.event_time
+                            for i in items_to_merge
+                            if i.properties.event_time
+                        ),
+                        default=now,
+                    ),
                 )
 
                 all_raw_props = []
@@ -420,17 +784,32 @@ class ScreenshotProcessor(BaseContextProcessor):
                 )
 
                 final_context = merged_ctx
-                need_to_del_ids.extend([item.id for item in items_to_merge if item.id in self._processed_cache.get(context_type.value, {})])
-                logger.debug(f"Merged {len(merged_ids)} items for context type: {context_type.value}")
+                need_to_del_ids.extend(
+                    [
+                        item.id
+                        for item in items_to_merge
+                        if item.id in self._processed_cache.get(context_type.value, {})
+                    ]
+                )
+                logger.debug(
+                    f"Merged {len(merged_ids)} items for context type: {context_type.value}"
+                )
             elif merge_type == "new":
                 # Independent new item
                 merged_ids = result.get("merged_ids", [])
                 if not merged_ids or merged_ids[0] not in all_items_map:
-                    logger.error(f"new type but no merged_ids or merged_ids[0] not in all_items_map, skipping")
+                    logger.error(
+                        f"new type but no merged_ids or merged_ids[0] not in all_items_map, skipping"
+                    )
                     continue
                 if merged_ids[0] in self._processed_cache.get(context_type.value, {}):
                     continue
                 final_context = all_items_map[merged_ids[0]]
+            else:
+                logger.error(
+                    f"Unsupported merge_type {merge_type} for context type: {context_type.value}"
+                )
+                continue
             new_ctxs[final_context.id] = final_context
             entity_refresh_items.append(final_context)
 
@@ -447,9 +826,16 @@ class ScreenshotProcessor(BaseContextProcessor):
             else:
                 result_contexts.append(entities_result)
 
-        return {"processed_contexts": result_contexts, "need_to_del_ids": need_to_del_ids, "new_ctxs": new_ctxs, "context_type": context_type.value}
+        return {
+            "processed_contexts": result_contexts,
+            "need_to_del_ids": need_to_del_ids,
+            "new_ctxs": new_ctxs,
+            "context_type": context_type.value,
+        }
 
-    async def _parse_single_context(self, item: ProcessedContext, entities: List[Dict[str, Any]]) -> ProcessedContext:
+    async def _parse_single_context(
+        self, item: ProcessedContext, entities: List[Dict[str, Any]]
+    ) -> ProcessedContext:
         """Parse a single context item."""
         entities_info = validate_and_clean_entities(entities)
         vectorize_task = do_vectorize_async(item.vectorize)
@@ -458,14 +844,15 @@ class ScreenshotProcessor(BaseContextProcessor):
         item.extracted_data.entities = entities_results
         return item
 
-    def _parse_event_time_str(self, time_str: Optional[str], default: datetime.datetime) -> datetime.datetime:
+    def _parse_event_time_str(
+        self, time_str: Optional[str], default: datetime.datetime
+    ) -> datetime.datetime:
         """Parse ISO time string, return default if invalid."""
         if not time_str or time_str == "null":
             return default
         try:
             if any(
-                invalid_char in time_str
-                for invalid_char in ["xxxx", "XXXX", "TZ:TZ", "TZ", "????"]
+                invalid_char in time_str for invalid_char in ["xxxx", "XXXX", "TZ:TZ", "TZ", "????"]
             ):
                 event_time = default
             elif time_str.endswith("Z"):
@@ -490,30 +877,41 @@ class ScreenshotProcessor(BaseContextProcessor):
         return {
             **item.extracted_data.to_dict(),
             "id": item.id,
-            "event_time": item.properties.event_time.isoformat()
-            if item.properties.event_time
-            else None,
+            "event_time": (
+                item.properties.event_time.isoformat() if item.properties.event_time else None
+            ),
         }
 
-    async def batch_process(self, raw_contexts: List[RawContextProperties]) -> List[ProcessedContext]:
+    async def batch_process(
+        self, raw_contexts: List[RawContextProperties]
+    ) -> List[ProcessedContext]:
         """
         Batch process screenshots using Vision LLM with concurrent batch processing
         """
 
-        logger.info(f"Processing {len(raw_contexts)} screenshots concurrently")
+        logger.info(
+            f"Processing {len(raw_contexts)} screenshots concurrently: "
+            f"{[self._describe_raw_context(raw_context) for raw_context in raw_contexts]}"
+        )
 
         # Step 1: Process all VLM tasks concurrently
         vlm_results = await asyncio.gather(
             *[self._process_vlm_single(raw_context) for raw_context in raw_contexts],
-            return_exceptions=True
+            return_exceptions=True,
         )
 
         all_vlm_items = []
         for idx, result in enumerate(vlm_results):
+            raw_context = raw_contexts[idx]
             if isinstance(result, Exception):
-                logger.error(f"Screenshot {idx} failed with error: {result}")
+                logger.error(
+                    f"Screenshot {idx} failed with error: {result}; "
+                    f"screenshot={self._describe_raw_context(raw_context)}"
+                )
                 increment_recording_stat("failed", 1)
-                record_processing_error(str(result), processor_name=self.get_name(), context_count=1)
+                record_processing_error(
+                    str(result), processor_name=self.get_name(), context_count=1
+                )
                 continue
             if result:
                 # for item in result:
@@ -522,6 +920,10 @@ class ScreenshotProcessor(BaseContextProcessor):
                 all_vlm_items.extend(result)
 
         if not all_vlm_items:
+            logger.warning(
+                "VLM batch completed but produced no items. "
+                f"screenshot_count={len(raw_contexts)}"
+            )
             return []
 
         logger.info(f"VLM parsing completed, got {len(all_vlm_items)} items")
@@ -530,7 +932,9 @@ class ScreenshotProcessor(BaseContextProcessor):
         newly_processed_contexts = await self._merge_contexts(all_vlm_items)
         return newly_processed_contexts
 
-    def _create_processed_context(self, analysis: Dict[str, Any], raw_context: RawContextProperties = None) -> ProcessedContext:
+    def _create_processed_context(
+        self, analysis: Dict[str, Any], raw_context: RawContextProperties = None
+    ) -> ProcessedContext:
         now = datetime.datetime.now()
         if not analysis:
             logger.warning(f"Skipping incomplete item: {analysis}")
@@ -540,10 +944,12 @@ class ScreenshotProcessor(BaseContextProcessor):
             context_type_str = analysis.get("context_type", "semantic_context")
             # Use the robust context type helper
             from opencontext.models.enums import get_context_type_for_analysis
+
             context_type = get_context_type_for_analysis(context_type_str)
         except Exception as e:
             logger.warning(f"Error processing context_type: {e}, using default activity_context.")
             from opencontext.models.enums import ContextType
+
             context_type = ContextType.ACTIVITY_CONTEXT
 
         event_time = self._parse_event_time_str(analysis.get("event_time"), now)
