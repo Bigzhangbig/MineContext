@@ -41,6 +41,7 @@ jobs:
 
           MIN_INTERVAL_DAYS = 1
           MAX_INTERVAL_DAYS = 7
+          MIN_COMMITS_FOR_INTERVAL = 2
           NEVER_SYNCED_SENTINEL_DAYS = float("inf")
 
           token = os.environ["GH_TOKEN"]
@@ -56,6 +57,8 @@ jobs:
                   "UPSTREAM_REPO must be in 'owner/repo' format, "
                   f"but got: {upstream_repo}"
               )
+          if ".." in upstream_repo or upstream_repo.startswith("."):
+              raise RuntimeError(f"UPSTREAM_REPO contains invalid path-like segments: {upstream_repo}")
 
           def gh_get(url: str):
               req = urllib.request.Request(
@@ -70,10 +73,9 @@ jobs:
                   with urllib.request.urlopen(req) as resp:
                       return json.loads(resp.read().decode("utf-8"))
               except urllib.error.HTTPError as e:
-                  body = e.read().decode("utf-8", errors="replace")
                   raise RuntimeError(
                       f"GitHub API HTTP error ({e.code} {e.reason}) for URL: {url}. "
-                      f"Response: {body[:500]}"
+                      "Check token permissions and API rate limits."
                   ) from e
               except urllib.error.URLError as e:
                   raise RuntimeError(f"GitHub API network error for URL: {url}: {e.reason}") from e
@@ -91,7 +93,7 @@ jobs:
           commit_times = [parse_time(c["commit"]["committer"]["date"]) for c in commits]
 
           # If upstream has very few recent commits, use the slowest sync cadence (7 days).
-          if len(commit_times) < 2:
+          if len(commit_times) < MIN_COMMITS_FOR_INTERVAL:
               interval_days = MAX_INTERVAL_DAYS
           else:
               deltas = []
@@ -101,8 +103,8 @@ jobs:
                       deltas.append(delta_days)
               if not deltas:
                   print(
-                      "warning: upstream commit timestamps are non-increasing; "
-                      "falling back to max interval"
+                      "warning: upstream commit timestamps are out of order or identical; "
+                      "using maximum sync interval (7 days)"
                   )
               avg_days = sum(deltas) / len(deltas) if deltas else MAX_INTERVAL_DAYS
               interval_days = max(MIN_INTERVAL_DAYS, min(MAX_INTERVAL_DAYS, math.ceil(avg_days)))
@@ -175,7 +177,7 @@ jobs:
           fi
 
           if ! git merge --no-edit "upstream/${UPSTREAM_BRANCH}"; then
-            echo "::error::Merge conflict detected while syncing upstream. Please resolve conflicts manually."
+            echo "::error::Merge conflict between ${DEFAULT_BRANCH} and upstream/${UPSTREAM_BRANCH}. Check this Actions log and resolve conflicts locally."
             exit 1
           fi
           git push origin "HEAD:${DEFAULT_BRANCH}"
