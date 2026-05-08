@@ -26,7 +26,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          if ! [[ "${UPSTREAM_REPO}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || [[ "${UPSTREAM_REPO}" == .* ]] || [[ "${UPSTREAM_REPO}" == *..* ]]; then
+          if ! [[ "${UPSTREAM_REPO}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || [[ "${UPSTREAM_REPO}" == .* ]] || [[ "${UPSTREAM_REPO}" == *..* ]]; then
             echo "::error::UPSTREAM_REPO must be owner/repo format."
             exit 1
           fi
