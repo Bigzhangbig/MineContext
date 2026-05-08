@@ -174,7 +174,10 @@ jobs:
             exit 0
           fi
 
-          git merge --no-edit "upstream/${UPSTREAM_BRANCH}"
+          if ! git merge --no-edit "upstream/${UPSTREAM_BRANCH}"; then
+            echo "::error::Merge conflict detected while syncing upstream. Please resolve conflicts manually."
+            exit 1
+          fi
           git push origin "HEAD:${DEFAULT_BRANCH}"
 
       - name: Skip sync
