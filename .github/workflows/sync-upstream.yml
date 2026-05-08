@@ -40,7 +40,7 @@ jobs:
 
           MIN_INTERVAL_DAYS = 1
           MAX_INTERVAL_DAYS = 7
-          NO_PREVIOUS_SYNC_DAYS = float("inf")
+          NEVER_SYNCED_SENTINEL_DAYS = float("inf")
 
           token = os.environ["GH_TOKEN"]
           repo = os.environ["REPO"]
@@ -98,14 +98,20 @@ jobs:
               last_sync_time = parse_time(runs[0]["created_at"])
               days_since_last = (now - last_sync_time).total_seconds() / 86400
           else:
-              days_since_last = NO_PREVIOUS_SYNC_DAYS
+              days_since_last = NEVER_SYNCED_SENTINEL_DAYS
 
           should_sync = event_name == "workflow_dispatch" or days_since_last >= interval_days
+          if math.isinf(days_since_last):
+              days_since_last_display = "never"
+              days_since_last_output = "-1"
+          else:
+              days_since_last_display = f"{days_since_last:.2f}"
+              days_since_last_output = f"{days_since_last:.2f}"
 
           print(f"upstream_repo={upstream_repo}")
           print(f"upstream_branch={upstream_branch}")
           print(f"interval_days={interval_days}")
-          print(f"days_since_last={days_since_last:.2f}")
+          print(f"days_since_last={days_since_last_display}")
           print(f"should_sync={str(should_sync).lower()}")
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
@@ -113,7 +119,7 @@ jobs:
               f.write(f"upstream_branch={upstream_branch}\n")
               f.write(f"default_branch={default_branch}\n")
               f.write(f"interval_days={interval_days}\n")
-              f.write(f"days_since_last={days_since_last:.2f}\n")
+              f.write(f"days_since_last={days_since_last_output}\n")
               f.write(f"should_sync={'true' if should_sync else 'false'}\n")
           PY
 
