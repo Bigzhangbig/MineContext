@@ -1,0 +1,60 @@
+name: Sync Upstream
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Fixed cadence chosen from upstream activity: run once every 2 days.
+    - cron: '17 2 */2 * *'
+
+permissions:
+  contents: write
+
+jobs:
+  sync-upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Sync from upstream
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          UPSTREAM_REPO: ${{ vars.UPSTREAM_REPO || 'volcengine/MineContext' }}
+          UPSTREAM_BRANCH: ${{ vars.UPSTREAM_BRANCH || '' }}
+        run: |
+          set -euo pipefail
+
+          if ! [[ "${UPSTREAM_REPO}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || [[ "${UPSTREAM_REPO}" == .* ]] || [[ "${UPSTREAM_REPO}" == *..* ]]; then
+            echo "::error::UPSTREAM_REPO must be owner/repo format."
+            exit 1
+          fi
+
+          if [ -z "${UPSTREAM_BRANCH}" ]; then
+            UPSTREAM_BRANCH="${DEFAULT_BRANCH}"
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout "${DEFAULT_BRANCH}"
+
+          if git remote get-url upstream >/dev/null 2>&1; then
+            git remote set-url upstream "https://github.com/${UPSTREAM_REPO}.git"
+          else
+            git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          fi
+
+          git fetch upstream -- "${UPSTREAM_BRANCH}"
+
+          if [ "$(git rev-parse HEAD)" = "$(git rev-parse "upstream/${UPSTREAM_BRANCH}")" ]; then
+            echo "Current branch is exactly up-to-date with upstream."
+            exit 0
+          fi
+
+          if ! git merge --no-edit "upstream/${UPSTREAM_BRANCH}"; then
+            echo "::error::Merge conflict between ${DEFAULT_BRANCH} and upstream/${UPSTREAM_BRANCH}. Resolve conflicts locally."
+            exit 1
+          fi
+
+          git push origin "HEAD:${DEFAULT_BRANCH}"
