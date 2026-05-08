@@ -33,6 +33,7 @@ jobs:
           import json
           import math
           import os
+          import re
           import urllib.error
           import urllib.parse
           import urllib.request
@@ -49,6 +50,12 @@ jobs:
           upstream_repo = os.environ["UPSTREAM_REPO"]
           upstream_branch = os.environ.get("UPSTREAM_BRANCH") or default_branch
           event_name = os.environ["EVENT_NAME"]
+
+          if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", upstream_repo):
+              raise RuntimeError(
+                  "UPSTREAM_REPO must be in 'owner/repo' format, "
+                  f"but got: {upstream_repo}"
+              )
 
           def gh_get(url: str):
               req = urllib.request.Request(
@@ -72,7 +79,9 @@ jobs:
                   raise RuntimeError(f"GitHub API network error for URL: {url}: {e.reason}") from e
 
           def parse_time(ts: str) -> datetime:
-              return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+              normalized = ts.replace("Z", "+00:00")
+              dt = datetime.fromisoformat(normalized)
+              return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
           commits_url = (
               f"https://api.github.com/repos/{upstream_repo}/commits?"
@@ -90,6 +99,11 @@ jobs:
                   delta_days = (commit_times[i] - commit_times[i + 1]).total_seconds() / 86400
                   if delta_days > 0:
                       deltas.append(delta_days)
+              if not deltas:
+                  print(
+                      "warning: upstream commit timestamps are non-increasing; "
+                      "falling back to max interval"
+                  )
               avg_days = sum(deltas) / len(deltas) if deltas else MAX_INTERVAL_DAYS
               interval_days = max(MIN_INTERVAL_DAYS, min(MAX_INTERVAL_DAYS, math.ceil(avg_days)))
 
@@ -155,8 +169,8 @@ jobs:
           fi
           git fetch upstream "${UPSTREAM_BRANCH}"
 
-          if git merge-base --is-ancestor "upstream/${UPSTREAM_BRANCH}" HEAD; then
-            echo "Current branch already contains upstream changes."
+          if [ "$(git rev-parse HEAD)" = "$(git rev-parse "upstream/${UPSTREAM_BRANCH}")" ]; then
+            echo "Current branch is exactly up-to-date with upstream."
             exit 0
           fi
 
